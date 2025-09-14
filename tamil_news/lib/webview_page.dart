@@ -1,4 +1,6 @@
 
+import 'dart:async';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,7 +12,6 @@ import 'package:webview_flutter/webview_flutter.dart';
 class WebviewPage extends StatefulWidget {
   final String url;
   final String title;
-  bool _isOffline = false;
 
   WebviewPage({super.key, required this.url, required this.title});
 
@@ -24,10 +25,13 @@ class _MyWebViewPageState extends State<WebviewPage> {
   double _progress = 0;
   // bool _canPopPage = false;
 
+  bool _isConnected = true;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
-    _checkConnectivity();
+    _initConnectivity();
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted) // Enable JavaScript
@@ -67,10 +71,15 @@ class _MyWebViewPageState extends State<WebviewPage> {
                     isForMainFrame: ${error.isForMainFrame}
           ''');
             // Optionally show an error message to the user
-            setState(() {
-              _isLoading = false;
-              widget._isOffline = true;
-            });
+
+            if (error.errorType == WebResourceErrorType.hostLookup ||
+                error.errorType == WebResourceErrorType.connect ||
+                error.errorType == WebResourceErrorType.timeout) {
+              setState(() {
+                _isConnected = false;
+                _isLoading = false;
+              });
+            }
           },
           onNavigationRequest: (NavigationRequest request) async {
             // Handle social sharing URLs
@@ -95,8 +104,36 @@ class _MyWebViewPageState extends State<WebviewPage> {
             SnackBar(content: Text(message.message)),
           );
         },
-      )
-      ..loadRequest(Uri.parse(widget.url)); // Load the initial URL
+      );
+    _loadPage();
+  }
+
+  void _loadPage() {
+    if (_isConnected) {
+      _controller.loadRequest(Uri.parse(widget.url));
+    }
+  }
+
+  Future<void> _initConnectivity() async {
+    // Initial check
+    final connectivityResult = await Connectivity().checkConnectivity();
+    setState(() {
+      _isConnected = !connectivityResult.contains(ConnectivityResult.none);
+    });
+
+    // Listen for changes
+    _connectivitySubscription = Connectivity()
+        .onConnectivityChanged
+        .listen((List<ConnectivityResult> results) {
+      final wasConnected = _isConnected;
+      setState(() {
+        _isConnected = !results.contains(ConnectivityResult.none);
+      });
+      // If connection was just restored, reload the webview
+      if (!wasConnected && _isConnected) {
+        _controller.reload();
+      }
+    });
   }
 
   Future _showExitDialog(BuildContext context) async {
@@ -128,6 +165,12 @@ class _MyWebViewPageState extends State<WebviewPage> {
   }
 
   @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
@@ -144,7 +187,7 @@ class _MyWebViewPageState extends State<WebviewPage> {
         }
       },
       child: Scaffold(
-        body: widget._isOffline ? _noNetworkPage() : SafeArea(
+        body: !_isConnected ? _noNetworkPage() : SafeArea(
           bottom: true,
           child: Stack(
             children: [
@@ -198,28 +241,12 @@ class _MyWebViewPageState extends State<WebviewPage> {
           ),
           const SizedBox(height: 20),
           ElevatedButton(
-            onPressed: _retryLoading,
+            onPressed: _loadPage,
             child: const Text("Retry"),
           )
         ],
       ),
     );
-  }
-
-  // Check connectivity status
-  Future<void> _checkConnectivity() async {
-    var result = await Connectivity().checkConnectivity();
-    setState(() {
-      widget._isOffline = (result == ConnectivityResult.none);
-    });
-  }
-
-  // Retry button for offline page
-  void _retryLoading() async {
-    await _checkConnectivity();
-    if (!widget._isOffline) {
-      _controller.reload();
-    }
   }
 }
 
